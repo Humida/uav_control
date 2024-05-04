@@ -6,69 +6,79 @@ import time
 from ultralytics import YOLO
 from mavsdk import System
 from mavsdk.offboard import (OffboardError, Attitude)
+from deep_sort_realtime.deepsort_tracker import DeepSort
+from collections import Counter
 import cv2
+# from deep_sort_realtime.deepsort_tracker import DeepSort
 
 # GLOBAL VARIABLE
 box_global = [0.0, 0.0, 0.0, 0.0]
+tracking = False
 system_running = True
-id_target  = 0
+tracker = cv2.TrackerCSRT_create()
 model = YOLO("model.engine")
 drone = System()
 
 # YOLO MODEL TRACKING
 def track_yolo(index):
     cap = cv2.VideoCapture("v4l2src device=/dev/video0 ! video/x-raw, format = YUY2, width=640, height=480, framerate=30/1  ! videoconvert ! video/x-raw,format=BGR ! appsink")
-    while True:
-        # Lấy ảnh từ camera UAV
+    global tracking
+    global box_global
+    count = 0
+    while True: 
         success, frame = cap.read()
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        # Xử lý ảnh bằng YOLOv8 để phát hiện đối tượng
-        results = model.track(frame, persist = True)
-     
-        data = results[0]
-        boxes = data.boxes.cpu().numpy()
     
-        id_target = select_id_vehicle(boxes.id, boxes.conf)
-        
-        if id_target == None:
-            cv2.imshow('Tracking', frame)
-        else:
-            box= get_box_coordinate(boxes=boxes, id_target= id_target)
-            global box_global
-            box_global = box
-            x1, y1, x2, y2 = box
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 1)
-            cv2.putText(frame, f"tank: {id_target}", (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA, False)
-            cv2.imshow('Tracking', frame)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            global system_running
-            system_running = False
+        if not success:
             break
+        
+        if tracking == False:
+            print('aaa')
+            count = count +1 
+            results = model(frame)
+            data = results[0]
+            boxes = data.boxes.cpu().numpy()  
+            for (bbox, conf, cls) in zip(boxes.xyxy, boxes.conf, boxes.cls):
 
-def select_id_vehicle(ids, confs):
-    conf_max = 0
-    id = 0
-    if ids is not None:
-        for id, conf in zip(ids, confs):
-            if id_target == id:
-                return id_target
-            elif conf > conf_max:
-                conf_max = conf
-                id = id
+                x1,y1,x2,y2 = map(int, bbox)
+            
                 
-        return id
-    elif ids is None and id_target == 0:
-        return None 
-
-def get_box_coordinate(boxes, id_target):
-    for (id, box) in zip(boxes.id, boxes.xyxy):
-                if id == id_target:
-                    x1, y1, x2, y2 = box.astype(int)
-                    return ([x1, y1, x2, y2])
+                if int(cls) is None:
+                    if conf < 0.8:
+                        continue
+                else:
+                    if conf < 0.8:  
+                        continue
                 
-    return [0,0,0,0]
+                print(x1, y1, x2, y2) 
+                if count >50:
+                    tracker.init(frame, (x1,y1,abs(x1 - x2),abs(y1 -y2)))
+                    tracking = True
+                    count = 0
+                    break
+        
+        if tracking:
+            success, bbox = tracker.update(frame)
+            if success:
+            # Theo dõi thành công
+                p1 = (int(bbox[0]), int(bbox[1]))
+                p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
+                box_global = [int(bbox[0]), int(bbox[1]),int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3])]
+                cv2.rectangle(frame, p1, p2, (255, 0, 0), 2)
+            else:
+                # Theo dõi thất bại
+                tracking = False
+                cv2.putText(frame, "Tracking failure detected", (100, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 2)
 
+            # Hiển thị kết quả
+            cv2.imshow("Frame", frame)
+            
+            # Thoát nếu nhấn 'q'
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+        else:
+            cv2.imshow("Frame", frame)
+        
+            
 # MAVSDK
 async def control_mavsdk():
     await drone.connect(system_address="serial:///dev/ttyUSB0:115200")
@@ -91,7 +101,13 @@ async def control_mavsdk():
         {error._result.result}")
         print("-- Disarming")
         await drone.action.disarm()
-        return
+        return    # thrust = 0.1
+    
+    # for i in range(100):
+    #     thrust = thrust - 0.001*int(i)
+    #     await drone.offbroard.set_attitude(Attitude(0.0, 0.0, 0.0, thrust))
+    #     await asyncio.sleep(0.01)
+    #     break
     
     async def takeoff(drone):
         thrust = 0  
@@ -103,24 +119,19 @@ async def control_mavsdk():
     await asyncio.sleep(10)
    
    
-    await drone.offboard.set_attitude(Attitude(0.0, 35, 0.0, 0.3))
-    await asyncio.sleep(30)
-    # while system_running:
-    #     print("run run run")
-    #     global box_global
-    #     print(box_global)
-    #     await control_uav(drone = drone, box_global = box_global)
-    #     await asyncio.sleep(0.1)
-        
-    # thrust = 0.1
-    # for i in range(100):
-    #     thrust = thrust - 0.001*int(i)
-    #     await drone.offbroard.set_attitude(Attitude(0.0, 0.0, 0.0, thrust))
-    #     await asyncio.sleep(0.01)
-    #     break
+    await drone.offboard.set_attitude(Attitude(0.0, -10, 0.0, 0.3))
+    await asyncio.sleep(10)
+    
+    while system_running:
+        print("run run run")
+        global box_global
+        print(box_global)
+        await control_uav(drone = drone, box_global = box_global)
+        await asyncio.sleep(0.1)
            
 async def control_uav(drone, box_global):
     # Điều khiển UAV dựa trên vị trí tương đối của đối tượng
+    
     x1, y1, x2, y2 = box_global
     xO = 319
     yO = 319
@@ -129,6 +140,7 @@ async def control_uav(drone, box_global):
     pitch_angle = (int(x_center- xO)/320)*90
     yaw_angle = (int(y_center- yO)/320)*90
     
+    print(box_global)
     
     pitch_angle_current = 0
     yaw_angle_current = 0
@@ -149,7 +161,7 @@ async def control_uav(drone, box_global):
         yaw_angle_current = yaw_angle_current - 1
         print(f"Euter angle pitch: {pitch_angle_current}")
         print(f"Euter angle yaw : {yaw_angle_current}") 
-        await drone.offboard.set_attitude(Attitude(pitch_angle_current, 0.0, yaw_angle_current, 0.15))
+        await drone.offboard.set_attitude(Attitude(0.0, pitch_angle_current, yaw_angle_current, 0.3))
         await asyncio.sleep(0.2)
         
     elif pitch_angle > 0 and yaw_angle < 0:
@@ -158,16 +170,22 @@ async def control_uav(drone, box_global):
         yaw_angle_current = yaw_angle_current + 1
         print(f"Euter angle pitch: {pitch_angle_current}")
         print(f"Euter angle yaw : {yaw_angle_current}") 
-        await drone.offboard.set_attitude(Attitude(pitch_angle_current, 0.0, yaw_angle_current, 0.1))
+        await drone.offboard.set_attitude(Attitude(0.0, pitch_angle_current, yaw_angle_current, 0.3))
         await asyncio.sleep(0.2)
-        
+            # thrust = 0.1
+    
+    # for i in range(100):
+    #     thrust = thrust - 0.001*int(i)
+    #     await drone.offbroard.set_attitude(Attitude(0.0, 0.0, 0.0, thrust))
+    #     await asyncio.sleep(0.01)
+    #     break
     elif pitch_angle < 0 and yaw_angle < 0:
         print('ccc')
         pitch_angle_current = pitch_angle_current + 1
         yaw_angle_current = yaw_angle_current + 1
         print(f"Euter angle pitch: {pitch_angle_current}")
         print(f"Euter angle yaw : {yaw_angle_current}") 
-        await drone.offboard.set_attitude(Attitude(pitch_angle_current, 0.0, yaw_angle_current, 0.15))
+        await drone.offboard.set_attitude(Attitude(0.0, pitch_angle_current, yaw_angle_current, 0.3))
         await asyncio.sleep(0.2)
         
     else:
@@ -176,7 +194,7 @@ async def control_uav(drone, box_global):
         yaw_angle_current = yaw_angle_current - 10
         print(f"Euter angle pitch: {pitch_angle_current}")
         print(f"Euter angle yaw : {yaw_angle_current}") 
-        await drone.offboard.set_attitude(Attitude(pitch_angle_current, 0.0, yaw_angle_current, 0.1))
+        await drone.offboard.set_attitude(Attitude(0.0, pitch_angle_current, yaw_angle_current, 0.3))
         await asyncio.sleep(0.2)
 
 async def takeoff(drone):

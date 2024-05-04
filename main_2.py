@@ -14,6 +14,7 @@ async def run():
     drone = System()
     cap = cv2.VideoCapture("v4l2src device=/dev/video0 ! video/x-raw, format = YUY2, width=640, height=480, framerate=30/1  ! videoconvert ! video/x-raw,format=BGR ! appsink")
     
+    
     while True:
         # Lấy ảnh từ camera UAV
         success, frame = cap.read()
